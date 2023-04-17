@@ -3,7 +3,7 @@ var express = require('express');
 var router = express.Router();
 
 var cache = require("../cache.js").create();
-var usdrAPY = require("../usdr-apy.js");
+var usdrAPY = require("../usdr-apy2.js");
 var tngblAPY = require("../tngbl-apy.js");
 var usdrSupply = require("../usdr-supply.js");
 
