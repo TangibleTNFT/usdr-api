@@ -49,11 +49,13 @@ async function computeAPY(from, to) {
       events.map((e) => provider.getTransaction(e.transactionHash))
     )
   );
+
   let circulatingUSDR = ethers.constants.Zero;
   let distributedTNGBL = ethers.constants.Zero;
   const tngblPrice = await oracle.quote(ethers.constants.WeiPerEther, {
     blockTag: fromBlock,
   });
+
   for (const transaction of transactions) {
     const { data } = transaction;
     const [, , receivers, amounts] = batchSender.decodeFunctionData(
@@ -61,8 +63,7 @@ async function computeAPY(from, to) {
       data
     );
     distributedTNGBL = amounts
-      .reduce((acc, amount) => acc.add(amount), distributedTNGBL)
-      .mul(tngblPrice);
+      .reduce((acc, amount) => acc.add(amount), distributedTNGBL);
     const balanceResult = await provider.call({
       to: BALANCE_CHECKER_ADDRESS,
       data: ethers.utils.hexConcat([USDR_ADDRESS, ...receivers])
@@ -73,6 +74,7 @@ async function computeAPY(from, to) {
       circulatingUSDR
     );
   }
+  distributedTNGBL = distributedTNGBL.mul(tngblPrice);
   const apyBN = circulatingUSDR.gt(ethers.constants.Zero)
     ? distributedTNGBL.mul(ethers.BigNumber.from(365)).div(circulatingUSDR)
     : ethers.constants.Zero;
