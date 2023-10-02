@@ -203,7 +203,7 @@ const calculateAPY = async () => {
     const fullPayout = await cache.get(
       `payout-${distributorAddress}`,
       () => distributor.paused().then(isPaused => isPaused ? constants.Zero : distributor.dailyAmount()),
-      3600
+      10800
     );
 
     // Loop through all fraction tokens in treasury for the fraction contract
