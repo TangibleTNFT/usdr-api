@@ -90,67 +90,75 @@ const calculateAPY = async () => {
     provider
   );
 
-  // Get the number of tokens in the treasury for the given real estate contract
-  const numTokens = await treasuryTracker
-    .tnftTokensInTreasurySize(REAL_ESTATE_ADDRESS)
-    .then(result => result.toNumber());
+  async function fetchDailyPayouts() {
+    // Get the number of tokens in the treasury for the given real estate contract
+    const numTokens = await treasuryTracker
+      .tnftTokensInTreasurySize(REAL_ESTATE_ADDRESS)
+      .then(result => result.toNumber());
 
-  // Loop through all the tokens in the treasury and check for any claimable rent
+    // Loop through all the tokens in the treasury and check for any claimable rent
 
-  // get token ids
-  let calls = [];
-  for (let i = 0; i < numTokens; i++) {
-    calls.push({
-      target: treasuryTracker.address,
-      callData: treasuryTracker.interface.encodeFunctionData('tnftTokensInTreasury', [REAL_ESTATE_ADDRESS, i])
-    });
-  }
-  const tokenIds = await multicall.callStatic.aggregate(calls).then(({returnData}) => {
-    return returnData.map((data) => {
-      const [tokenId] = treasuryTracker.interface.decodeFunctionResult('tnftTokensInTreasury', data);
-      return tokenId;
-    });
-  });
-
-  // get distributors
-  calls = [];
-  for (let i = 0; i < numTokens; i++) {
-    calls.push({
-      target: rentShare.address,
-      callData: rentShare.interface.encodeFunctionData('distributorForToken', [REAL_ESTATE_ADDRESS, tokenIds[i]])
-    });
-  }
-  const distributors = await multicall.callStatic.aggregate(calls).then(({returnData}) => {
-    return returnData.map((data) => {
-      const [distributorAddress] = rentShare.interface.decodeFunctionResult('distributorForToken', data);
-      return distributorAddress;
-    });
-  });
-
-  // get daily amounts
-  const distributor = new ethers.utils.Interface(DISTRIBUTOR_ABI);
-  calls = [];
-  for (let i = 0; i < numTokens; i++) {
-    calls.push({
-      target: distributors[i],
-      callData: distributor.encodeFunctionData('paused')
-    });
-    calls.push({
-      target: distributors[i],
-      callData: distributor.encodeFunctionData('dailyAmount')
-    });
-  }
-  const dailyAmounts = await multicall.callStatic.aggregate(calls).then(({returnData}) => {
-    const amounts = [];
-    for (let i = 0; i < numTokens; i += 2) {
-      const [isPaused] = distributor.decodeFunctionResult('paused', returnData[i]);
-      const [dailyAmount] = distributor.decodeFunctionResult('dailyAmount', returnData[i + 1]);
-      amounts.push(isPaused ? constants.Zero : dailyAmount);
+    // get token ids
+    let calls = [];
+    for (let i = 0; i < numTokens; i++) {
+      calls.push({
+        target: treasuryTracker.address,
+        callData: treasuryTracker.interface.encodeFunctionData('tnftTokensInTreasury', [REAL_ESTATE_ADDRESS, i])
+      });
     }
-    return amounts;
-  });
+    const tokenIds = await multicall.callStatic.aggregate(calls).then(({returnData}) => {
+      return returnData.map((data) => {
+        const [tokenId] = treasuryTracker.interface.decodeFunctionResult('tnftTokensInTreasury', data);
+        return tokenId;
+      });
+    });
 
-  let dailyPayout = dailyAmounts.reduce((a, b) => a.add(b), constants.Zero);
+    // get distributors
+    calls = [];
+    for (let i = 0; i < numTokens; i++) {
+      calls.push({
+        target: rentShare.address,
+        callData: rentShare.interface.encodeFunctionData('distributorForToken', [REAL_ESTATE_ADDRESS, tokenIds[i]])
+      });
+    }
+    const distributors = await multicall.callStatic.aggregate(calls).then(({returnData}) => {
+      return returnData.map((data) => {
+        const [distributorAddress] = rentShare.interface.decodeFunctionResult('distributorForToken', data);
+        return distributorAddress;
+      });
+    });
+
+    // get daily amounts
+    const distributor = new ethers.utils.Interface(DISTRIBUTOR_ABI);
+    calls = [];
+    for (let i = 0; i < numTokens; i++) {
+      calls.push({
+        target: distributors[i],
+        callData: distributor.encodeFunctionData('paused')
+      });
+      calls.push({
+        target: distributors[i],
+        callData: distributor.encodeFunctionData('dailyAmount')
+      });
+    }
+    const dailyAmounts = await multicall.callStatic.aggregate(calls).then(({returnData}) => {
+      const amounts = [];
+      for (let i = 0; i < numTokens; i += 2) {
+        const [isPaused] = distributor.decodeFunctionResult('paused', returnData[i]);
+        const [dailyAmount] = distributor.decodeFunctionResult('dailyAmount', returnData[i + 1]);
+        amounts.push(isPaused ? constants.Zero : dailyAmount);
+      }
+      return amounts;
+    });
+
+    return dailyAmounts.reduce((a, b) => a.add(b), constants.Zero);
+  }
+
+  let dailyPayout = await cache.get(
+    `tnft-daily-payout`,
+    fetchDailyPayouts,
+    3600
+  );
 
   // Get the number of TNFT fractions in treasury for the real estate contract
   const numFractions = await treasuryTracker
