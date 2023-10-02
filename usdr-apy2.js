@@ -157,7 +157,7 @@ const calculateAPY = async () => {
   let dailyPayout = await cache.get(
     `tnft-daily-payout`,
     fetchDailyPayouts,
-    3600
+    10800
   );
 
   // Get the number of TNFT fractions in treasury for the real estate contract
