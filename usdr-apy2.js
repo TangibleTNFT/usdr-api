@@ -5,6 +5,7 @@ const provider = require("./provider.js");
 
 const ADDRESS_PROVIDER_ADDRESS = '0xE95BCf65478d6ba44C5F57740CfA50EA443619eA';
 const REAL_ESTATE_ADDRESS = '0x29613FbD3e695a669C647597CEFd60bA255cc1F8';
+const MULTICALL_ADDRESS = '0xcA11bde05977b3631167028862bE2a173976CA11';
 
 const USDR_CONTRACT = require(`./abi/USDR.json`);
 
@@ -41,7 +42,17 @@ const TREASURY_TRACKER_ABI = [
   "function getFractionTokensInTreasury(address ftnft) view returns (uint256[])",
 ];
 
+const MULTICALL_ABI = [
+  "function aggregate(tuple(address target, bytes callData)[] calldata calls) returns (uint256 blockNumber, bytes[] memory returnData)"
+];
+
 const calculateAPY = async () => {
+
+  const multicall = new ethers.Contract(
+    MULTICALL_ADDRESS,
+    MULTICALL_ABI,
+    provider
+  );
 
   const USDR = new ethers.Contract(
       USDR_CONTRACT.address,
@@ -84,33 +95,62 @@ const calculateAPY = async () => {
     .tnftTokensInTreasurySize(REAL_ESTATE_ADDRESS)
     .then(result => result.toNumber());
 
-  let dailyPayout = constants.Zero;
-
   // Loop through all the tokens in the treasury and check for any claimable rent
-  for (let i = 0; i < numTokens; i++) {
-    // Get token ID and distributor address for each token
-    const tokenId = await treasuryTracker.tnftTokensInTreasury(
-      REAL_ESTATE_ADDRESS,
-      i
-    );
-    const distributorAddress = await rentShare.distributorForToken(
-      REAL_ESTATE_ADDRESS,
-      tokenId
-    );
 
-    // Create instance of Distributor and RevenueShare contracts
-    const distributor = new Contract(
-      distributorAddress,
-      DISTRIBUTOR_ABI,
-      provider
-    );
-    const payout = await cache.get(
-      `payout-${distributorAddress}`,
-      () => distributor.paused().then(isPaused => isPaused ? constants.Zero : distributor.dailyAmount()),
-      3600
-    );
-    dailyPayout = dailyPayout.add(payout);
+  // get token ids
+  let calls = [];
+  for (let i = 0; i < numTokens; i++) {
+    calls.push({
+      target: treasuryTracker.address,
+      callData: treasuryTracker.interface.encodeFunctionData('tnftTokensInTreasury', [REAL_ESTATE_ADDRESS, i])
+    });
   }
+  const tokenIds = await multicall.callStatic.aggregate(calls).then(({returnData}) => {
+    return returnData.map((data) => {
+      const [tokenId] = treasuryTracker.interface.decodeFunctionResult('tnftTokensInTreasury', data);
+      return tokenId;
+    });
+  });
+
+  // get distributors
+  calls = [];
+  for (let i = 0; i < numTokens; i++) {
+    calls.push({
+      target: rentShare.address,
+      callData: rentShare.interface.encodeFunctionData('distributorForToken', [REAL_ESTATE_ADDRESS, tokenIds[i]])
+    });
+  }
+  const distributors = await multicall.callStatic.aggregate(calls).then(({returnData}) => {
+    return returnData.map((data) => {
+      const [distributorAddress] = rentShare.interface.decodeFunctionResult('distributorForToken', data);
+      return distributorAddress;
+    });
+  });
+
+  // get daily amounts
+  const distributor = new ethers.utils.Interface(DISTRIBUTOR_ABI);
+  calls = [];
+  for (let i = 0; i < numTokens; i++) {
+    calls.push({
+      target: distributors[i],
+      callData: distributor.encodeFunctionData('paused')
+    });
+    calls.push({
+      target: distributors[i],
+      callData: distributor.encodeFunctionData('dailyAmount')
+    });
+  }
+  const dailyAmounts = await multicall.callStatic.aggregate(calls).then(({returnData}) => {
+    const amounts = [];
+    for (let i = 0; i < numTokens; i += 2) {
+      const [isPaused] = distributor.decodeFunctionResult('paused', returnData[i]);
+      const [dailyAmount] = distributor.decodeFunctionResult('dailyAmount', returnData[i + 1]);
+      amounts.push(isPaused ? constants.Zero : dailyAmount);
+    }
+    return amounts;
+  });
+
+  let dailyPayout = dailyAmounts.reduce((a, b) => a.add(b), constants.Zero);
 
   // Get the number of TNFT fractions in treasury for the real estate contract
   const numFractions = await treasuryTracker
